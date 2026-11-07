@@ -1,0 +1,155 @@
+rules_version = '2';
+
+// CampusCare Firestore Security Rules.
+//
+// The Flutter app validates input for a good user experience, but anyone can
+// call the Firestore API directly — so these rules are the real protection.
+// Limits and status transitions here must match lib/core/constants/
+// app_constants.dart and lib/models/incident_status.dart.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ------------------------------------------------------------ helpers
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    // Signed in with a verified ALU email address.
+    function isVerifiedAlu() {
+      return signedIn()
+        && request.auth.token.email_verified == true
+        && request.auth.token.email.matches('.*@(alustudent|alueducation)[.]com');
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    // Staff role is set by an administrator in the Firebase Console.
+    function isStaff() {
+      return isVerifiedAlu() && userDoc().data.role == 'staff';
+    }
+
+    function isString(value, minLen, maxLen) {
+      return value is string && value.size() >= minLen && value.size() <= maxLen;
+    }
+
+    function validTransition(from, to) {
+      return (from == 'submitted' && to in ['inProgress', 'resolved'])
+        || (from == 'inProgress' && to in ['submitted', 'resolved'])
+        || (from == 'resolved' && to == 'inProgress');
+    }
+
+    // ------------------------------------------------------------ users
+
+    match /users/{uid} {
+      allow read: if isOwner(uid) || isStaff();
+
+      // Created once at registration (before email verification).
+      allow create: if isOwner(uid)
+        && request.resource.data.keys().hasOnly(
+             ['fullName', 'email', 'role', 'photoUrl', 'createdAt', 'updatedAt'])
+        && isString(request.resource.data.fullName, 3, 60)
+        && request.resource.data.email == request.auth.token.email
+        && request.auth.token.email.matches('.*@(alustudent|alueducation)[.]com')
+        && request.resource.data.role == 'student'          // nobody self-promotes
+        && request.resource.data.photoUrl == null
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+
+      // Users may change only their name and photo.
+      allow update: if isOwner(uid)
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['fullName', 'photoUrl', 'updatedAt'])
+        && isString(request.resource.data.fullName, 3, 60)
+        && (request.resource.data.photoUrl == null
+            || request.resource.data.photoUrl is string)
+        && request.resource.data.updatedAt == request.time;
+
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------ incidents
+
+    match /incidents/{incidentId} {
+      // Every verified ALU member can see campus reports.
+      allow read: if isVerifiedAlu();
+
+      allow create: if isVerifiedAlu()
+        && request.resource.data.keys().hasOnly([
+             'title', 'description', 'category', 'location', 'locationDetails',
+             'photoUrl', 'reporterId', 'reporterName', 'status',
+             'createdAt', 'updatedAt', 'inProgressAt', 'resolvedAt'])
+        && isString(request.resource.data.title, 1, 80)
+        && isString(request.resource.data.description, 1, 1000)
+        && request.resource.data.category in [
+             'facilities', 'water', 'electricity', 'safety',
+             'sanitation', 'furniture', 'internet', 'other']
+        && request.resource.data.location in [
+             'classroom', 'lectureHall', 'library', 'residence', 'cafeteria',
+             'washroom', 'sportsArea', 'adminBlock', 'other']
+        && isString(request.resource.data.locationDetails, 0, 100)
+        && (request.resource.data.photoUrl == null
+            || request.resource.data.photoUrl is string)
+        && request.resource.data.reporterId == request.auth.uid
+        && request.resource.data.reporterName == userDoc().data.fullName
+        && request.resource.data.status == 'submitted'
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.inProgressAt == null
+        && request.resource.data.resolvedAt == null;
+
+      // Only staff change a report, and only its status fields.
+      allow update: if isStaff()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['status', 'updatedAt', 'inProgressAt', 'resolvedAt'])
+        && validTransition(resource.data.status, request.resource.data.status)
+        && request.resource.data.updatedAt == request.time;
+
+      // Reports are a permanent record.
+      allow delete: if false;
+
+      // ---------------------------------------------- status history
+
+      match /statusHistory/{historyId} {
+        function incidentPath() {
+          return /databases/$(database)/documents/incidents/$(incidentId);
+        }
+
+        allow read: if isVerifiedAlu();
+
+        allow create: if isVerifiedAlu()
+          && request.resource.data.keys().hasOnly(
+               ['fromStatus', 'toStatus', 'changedBy', 'changedByName', 'note', 'changedAt'])
+          && request.resource.data.changedBy == request.auth.uid
+          && request.resource.data.changedByName is string
+          && isString(request.resource.data.note, 0, 300)
+          && request.resource.data.changedAt == request.time
+          && (
+            // (a) The first "Submitted" entry, written in the same batch that
+            //     creates the incident: it must not exist yet before the
+            //     batch, and must belong to this user after it.
+            (request.resource.data.fromStatus == null
+              && request.resource.data.toStatus == 'submitted'
+              && !exists(incidentPath())
+              && getAfter(incidentPath()).data.reporterId == request.auth.uid)
+            ||
+            // (b) A staff status change: the entry must describe exactly the
+            //     change being made to the incident in the same transaction.
+            (isStaff()
+              && request.resource.data.fromStatus == get(incidentPath()).data.status
+              && request.resource.data.toStatus == getAfter(incidentPath()).data.status
+              && request.resource.data.fromStatus != request.resource.data.toStatus)
+          );
+
+        // Append-only audit trail.
+        allow update, delete: if false;
+      }
+    }
+  }
+}

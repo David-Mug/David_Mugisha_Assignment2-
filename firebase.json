@@ -1,0 +1,38 @@
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "student-life-1",
+          "appId": "1:95290316699:android:a8856c6999137b559e333e",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "ios": {
+        "default": {
+          "projectId": "student-life-1",
+          "appId": "1:95290316699:ios:7d771e6f528233f99e333e",
+          "uploadDebugSymbols": false,
+          "fileOutput": "ios/Runner/GoogleService-Info.plist"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "student-life-1",
+          "configurations": {
+            "android": "1:95290316699:android:a8856c6999137b559e333e",
+            "ios": "1:95290316699:ios:7d771e6f528233f99e333e",
+            "web": "1:95290316699:web:95a4d903a557de629e333e"
+          }
+        }
+      }
+    }
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "storage": {
+    "rules": "storage.rules"
+  }
+}
